@@ -6,15 +6,22 @@
 #include <string.h>
 
 #define HV_MAGIC 0x48564c31u
-#define HV_PROTOCOL 3u
+#define HV_PROTOCOL 10u
+#define HV_PICK_HITS 32
+typedef struct hv_pick_hit {
+  char name[48];
+  uint32_t mask, active;
+  float bounds[6], pixels, depth;
+} hv_pick_hit;
 #define HV_NAMES 64
 #define HV_NAME_SIZE 48
 #define HV_LEASE_MS 2000
 enum { HV_HIDDEN, HV_ALL, HV_TYPES, HV_SELECTED };
+enum { HV_TINT_OFF,HV_TINT_FACES };
 enum { HV_CAM_READ, HV_CAM_START, HV_CAM_STOP, HV_CAM_IGNORE, HV_CAM_COLLIDE,
-       HV_CAM_LOCK, HV_CAM_UNLOCK, HV_CAM_COUNT };
+       HV_CAM_LOCK, HV_CAM_UNLOCK, HV_CAM_MOVE, HV_CAM_COUNT };
 typedef struct hv_config {
-  uint32_t mode, include_mask, exclude_mask, count, include_inactive;
+  uint32_t mode, include_mask, exclude_mask, count, include_inactive, fill_faces, opacity;
   char names[HV_NAMES][HV_NAME_SIZE];
 } hv_config;
 /* All shared fields are protected by the named mutex. Neither game callback
@@ -29,7 +36,22 @@ typedef struct hv_shared {
   char version[32];
   uint32_t camera_available, camera_request, camera_completed, camera_action;
   uint32_t camera_ok, camera_bits;
+  float camera_target[3];
   char camera_message[128];
+  uint32_t live_level, pick_request, pick_completed, pick_level, pick_count;
+  uint32_t pick_width, pick_height;
+  float pick_x, pick_y;
+  uint64_t pick_time;
+  hv_pick_hit pick_hits[HV_PICK_HITS];
+  char pick_message[128], highlight[48];
+  uint32_t highlight_level;
+  uint32_t inspection_enabled;
+  uint32_t inspect_mode, inspect_available, inspect_applied;
+  char inspect_message[128];
+  uint32_t fill_available;
+  char face_status[128];
+  float view_position[3];
+  uint64_t view_position_time;
 } hv_shared;
 
 static inline void hv_object_name(wchar_t *out, size_t count,
@@ -39,7 +61,7 @@ static inline void hv_object_name(wchar_t *out, size_t count,
   out[count - 1] = 0;
 }
 static inline int hv_config_valid(const hv_config *c) {
-  if (c->mode > HV_SELECTED || c->count > HV_NAMES || c->include_inactive > 1 ||
+  if (c->mode > HV_SELECTED || c->count > HV_NAMES || c->include_inactive > 1 || c->fill_faces > HV_TINT_FACES || c->opacity>100 ||
       (c->include_mask | c->exclude_mask) & ~63u) return 0;
   for (unsigned i = 0; i < c->count; ++i) {
     size_t n = 0;

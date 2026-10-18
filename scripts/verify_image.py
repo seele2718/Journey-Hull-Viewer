@@ -24,7 +24,7 @@ def main():
     profile = json.loads((ROOT/'src/image_profile.json').read_text())
     assert size >= profile['required_image_size']
     sections = [struct.unpack_from('<IIII', data, pe+24+optional+i*40+8) for i in range(count)]
-    for rva, raw in profile['entries'] + profile['camera_entries']:
+    for rva, raw in profile['entries'] + profile['camera_entries'] + profile.get('input_entries',[]) + profile.get('fill_entries',[]) + profile.get('depth_entries',[]):
         expected = bytes.fromhex(raw)
         found = False
         for _, start, length, offset in sections:
@@ -37,7 +37,10 @@ def main():
     print(json.dumps({'path': str(args.image.resolve()), 'sha256': hashlib.sha256(data).hexdigest(),
                       'architecture': 'x64', 'imageBase': hex(base), 'fileVersion': None,
                       'matchedGuards': len(profile['entries']),
-                      'matchedCameraGuards': len(profile['camera_entries'])}, indent=2))
+                      'matchedCameraGuards': len(profile['camera_entries']),
+                      'matchedInputGuards': len(profile.get('input_entries',[])),
+                      'matchedFillGuards': len(profile.get('fill_entries',[])),
+                      'matchedDepthGuards': len(profile.get('depth_entries',[]))}, indent=2))
 
 
 if __name__ == '__main__':

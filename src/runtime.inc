@@ -1,7 +1,6 @@
 /* Included by renderer.c so game-thread filtering has no public mutable API. */
 #include "camera.h"
-static HANDLE g_mapping, g_mutex;
-static hv_shared *g_shared;
+#include "inspect_input.h"
 static volatile LONG g_started, g_ready;
 static uint32_t g_revision;
 static uint32_t g_sample_revision;
@@ -26,6 +25,7 @@ static void process_camera(void *game) {
     return;
   }
   uint32_t action = g_shared->camera_action;
+  float target[3];memcpy(target,g_shared->camera_target,sizeof(target));
   BOOL pending = request != g_shared->camera_completed;
   BOOL live = GetTickCount64() - g_shared->heartbeat <= HV_LEASE_MS;
   ReleaseMutex(g_mutex);
@@ -38,6 +38,7 @@ static void process_camera(void *game) {
   if (!readable_range(state, 0x40)) state = NULL;
   BOOL ok = FALSE;
   if (!live) lstrcpyA(message, "Camera request expired.");
+  else if(action==HV_CAM_MOVE)ok=execute_camera_command(state,action,target,&bits,message);
   else ok = execute_camera(state, action, &bits, message);
   /* Never execute again just because the panel owns the mutex at completion. */
   completed = request; saved_bits = bits; saved_ok = ok;
@@ -58,6 +59,19 @@ static void read_panel(void) {
     if (g_shared->magic == HV_MAGIC && g_shared->protocol == HV_PROTOCOL &&
         g_shared->size == sizeof(*g_shared)) {
       g_heartbeat = g_shared->heartbeat;
+      g_input_listening=GetTickCount64()-g_heartbeat<=HV_LEASE_MS;
+      InterlockedExchange(&g_view_requested,g_input_listening);
+      if((InterlockedExchange(&g_input_toggle,0)&1)&&g_input_listening&&g_input_supported) {
+        g_shared->inspect_mode=g_shared->inspect_mode?0:1;
+        g_shared->inspection_enabled=g_shared->inspect_mode||g_shared->highlight[0];
+      }
+      if(GetTickCount64()-g_heartbeat>HV_LEASE_MS)g_shared->inspect_mode=0;
+      if(InterlockedExchange(&g_input_cancel,0))g_shared->inspect_mode=0;
+      g_input_requested=g_shared->inspect_mode==1;
+      g_shared->inspect_applied=InterlockedCompareExchange(&g_input_mode,0,0)!=0;
+      g_shared->inspect_available=g_input_supported;
+      memcpy(g_shared->inspect_message,g_input_message,sizeof(g_input_message));
+      InterlockedExchange(&g_inspection_enabled,g_shared->inspection_enabled==1);
       if (g_revision != g_shared->revision && hv_config_valid(&g_shared->config)) {
         const hv_config *c = &g_shared->config;
         g_hull_filter_mode = c->mode == HV_ALL ? k_hull_filter_all :
@@ -67,6 +81,8 @@ static void read_panel(void) {
         g_hull_filter_exclude_mask = c->exclude_mask;
         g_hull_selection_count = c->count;
         g_include_inactive = c->include_inactive && c->mode == HV_SELECTED;
+        g_fill_faces=c->fill_faces!=0;
+        g_fill_opacity=c->opacity*.01f;
         for (unsigned i = 0; i < c->count; ++i) {
           g_hull_selections[i].length = strlen(c->names[i]);
           memcpy(g_hull_selections[i].text, c->names[i], HV_NAME_SIZE);
@@ -78,6 +94,7 @@ static void read_panel(void) {
       g_shared->active_matches = g_active_matches;
       g_shared->inactive_matches = g_inactive_matches;
       g_shared->unreadable_names = g_unreadable_names;
+      g_shared->live_level = g_live_level;
       LONG index = InterlockedCompareExchange(&g_hull_published_index, 0, 0);
       g_shared->drawn_hulls = InterlockedCompareExchange(&g_hull_snapshot_ready, 0, 0)
           ? g_hull_snapshots[index].hull_count : 0;
@@ -85,6 +102,10 @@ static void read_panel(void) {
     ReleaseMutex(g_mutex);
   }
   if (GetTickCount64() - g_heartbeat > HV_LEASE_MS) {
+    g_input_requested=FALSE;
+    g_input_listening=FALSE;
+    InterlockedExchange(&g_view_requested,0);
+    InterlockedExchange(&g_inspection_enabled,0);
     g_hull_filter_mode = k_hull_filter_none;
     g_revision = 0; /* Reapply the panel's current config on reconnect. */
     InterlockedExchange(&g_hull_snapshot_ready, 0);
@@ -97,6 +118,7 @@ static uint64_t app_update_hook(void *app) {
   uint64_t result = g_app_update(app);
   if (InterlockedCompareExchange(&g_ready, 0, 0)) {
     read_panel();
+    update_inspect_input(g_input_requested);
     process_camera(app ? (BYTE *)app + 0x4d8 : NULL);
     publish_all_hulls(app ? (BYTE *)app + 0x4d8 : NULL);
     g_sample_revision = g_revision;
@@ -133,6 +155,8 @@ __declspec(dllexport) DWORD WINAPI HullViewerStart(void *unused) {
   g_shared->magic = HV_MAGIC;
   g_shared->protocol = HV_PROTOCOL;
   g_shared->size = sizeof(*g_shared);
+  g_shared->live_level = UINT32_MAX;
+  g_shared->highlight_level = UINT32_MAX;
   lstrcpynA(g_shared->version, HV_VERSION, sizeof(g_shared->version));
   ReleaseMutex(g_mutex);
 
@@ -142,9 +166,14 @@ __declspec(dllexport) DWORD WINAPI HullViewerStart(void *unused) {
     return 3;
   }
   init_camera_api(image);
+  g_input_supported=verify_input_guards(image);
+  g_fill_supported=verify_fill_guards(image);
+  if(!g_input_supported)lstrcpyA(g_input_message,"Inspect mode is unavailable for this input layout. Hull drawing is still available.");
   lock = WaitForSingleObject(g_mutex, 1000);
   if (lock == WAIT_OBJECT_0 || lock == WAIT_ABANDONED) {
     g_shared->camera_available = g_camera_available;
+    g_shared->inspect_available = g_input_supported;
+    g_shared->fill_available=g_fill_supported;
     ReleaseMutex(g_mutex);
   }
   MH_STATUS status = MH_Initialize();

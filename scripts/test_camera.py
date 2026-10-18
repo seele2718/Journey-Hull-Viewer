@@ -14,10 +14,10 @@ def literals(text):
 prefix = literals(re.search(r'const char \*prefix = (.*?);\n', source, re.S)[1])
 suffix = literals(re.search(r'const char \*suffix =(.*?);\n', source, re.S)[1])
 actions = re.findall(r'case (HV_CAM_\w+): return ("(?:\\.|[^"\\])*");', source)
-assert len(actions) == 7
+assert len(actions) == 8
 program = 'local commands = {}\n'
 for name, text in actions:
-    command = prefix + ast.literal_eval(text) + suffix
+    command = ('local x,y,z=123.5,-4,800; ' if name == 'HV_CAM_MOVE' else '') + prefix + ast.literal_eval(text) + suffix
     assert ']=]' not in command
     program += f'commands.{name} = assert(load([=[{command}]=]))\n'
 program += (root / 'tests/camera.lua').read_text()

@@ -1,5 +1,7 @@
 #ifndef HV_CAMERA_H
 #define HV_CAMERA_H
+#include <stdio.h>
+#include <math.h>
 /* Fixed camera actions only. Executed on the game update thread using the
  * game's protected Lua API; no console, arbitrary source or global overrides. */
 typedef struct hv_lua hv_lua;
@@ -25,10 +27,11 @@ static const char *camera_action_source(uint32_t action) {
     case HV_CAM_COLLIDE: return "Vars.DebugCamera.collideTerrain(true); Vars.CameraSystem.defCollideTerrain(true); ";
     case HV_CAM_LOCK: return "assert(cs:GetDebugCam(),'Debug camera unavailable'):SetAngleLock(true); ";
     case HV_CAM_UNLOCK: return "assert(cs:GetDebugCam(),'Debug camera unavailable'):SetAngleLock(false); ";
+    case HV_CAM_MOVE: return "assert(cs:UsingDebugCam(),'Start Debug Cam first'); local k=cs:GetBlendState(); local d=assert(cs:GetDebugCam(),'Debug camera unavailable'); local locked=d:GetAngleLock(); d:SetXForm(k:rot(),{x,y,z},k:fov()); d:SetAngleLock(locked); ";
     default: return NULL;
   }
 }
-static BOOL execute_camera(hv_lua *state, uint32_t action, uint32_t *bits,
+static BOOL execute_camera_command(hv_lua *state, uint32_t action, const float target[3], uint32_t *bits,
                             char message[128]) {
   const char *source = camera_action_source(action);
   *bits = 0;
@@ -46,7 +49,15 @@ static BOOL execute_camera(hv_lua *state, uint32_t action, uint32_t *bits,
       "local d=cs:GetDebugCam(); local function b(v) return v and '1' or '0' end; "
       "return b(cs:UsingDebugCam())..b(Vars.DebugCamera.collideTerrain()).."
       "b(Vars.CameraSystem.defCollideTerrain())..b(d and d:GetAngleLock())";
-    lstrcpyA(command, prefix); lstrcatA(command, source); lstrcatA(command, suffix);
+    command[0]=0;
+    if(action==HV_CAM_MOVE) {
+      if(!target||!isfinite(target[0])||!isfinite(target[1])||!isfinite(target[2])||
+          fabsf(target[0])>1000000||fabsf(target[1])>1000000||fabsf(target[2])>1000000) {
+        lstrcpyA(message,"Invalid camera coordinates.");g_camera_lua.settop(state,top);return FALSE;
+      }
+      snprintf(command,sizeof(command),"local x,y,z=%.9g,%.9g,%.9g; ",(double)target[0],(double)target[1],(double)target[2]);
+    }
+    lstrcatA(command, prefix); lstrcatA(command, source); lstrcatA(command, suffix);
     int error = g_camera_lua.loadbuffer(state, command, strlen(command), "=hull viewer camera", "t");
     if (!error) error = g_camera_lua.pcall(state, 0, 1, 0, 0, NULL);
     if (g_camera_lua.type(state, -1) == 4) {
@@ -68,6 +79,9 @@ static BOOL execute_camera(hv_lua *state, uint32_t action, uint32_t *bits,
   }
   g_camera_lua.settop(state, top);
   return ok;
+}
+static BOOL execute_camera(hv_lua *state,uint32_t action,uint32_t *bits,char message[128]) {
+  return execute_camera_command(state,action,NULL,bits,message);
 }
 static void init_camera_api(BYTE *image) {
   g_camera_available = verify_camera_guards(image);

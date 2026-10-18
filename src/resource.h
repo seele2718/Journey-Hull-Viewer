@@ -1,0 +1,1 @@
+#define IDI_HULL_VIEWER 1
